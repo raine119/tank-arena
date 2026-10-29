@@ -139,6 +139,19 @@ html, body {
   font-weight: 700;
 }
 
+.ping-badge {
+  font-family: var(--font-mono);
+  font-size: 0.68rem;
+  color: #00ff88;
+  letter-spacing: 1px;
+  margin: 1px 0;
+  text-shadow: 0 0 6px rgba(0, 255, 136, 0.4);
+}
+
+.ping-badge.hidden {
+  display: none;
+}
+
 .timer-container {
   display: flex;
   align-items: center;

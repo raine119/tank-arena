@@ -208,7 +208,7 @@ export class GameManager {
         dt,
         this.p2,
         this.p1,
-        this.maze.segments,
+        this.maze,
         this.powerups,
         this.projectiles
       );
@@ -483,21 +483,43 @@ export class GameManager {
       countdownTimer: this.countdownTimer,
       suddenDeathTime: this.suddenDeathTime,
       suddenDeathActive: this.suddenDeathActive,
-      timeScale: this.timeScale
+      timeScale: this.timeScale,
+      timestamp: performance.now()
     };
   }
 
+  // Target positions for guest smooth interpolation
+  public targetP1 = { x: 0, y: 0, angle: 0 };
+  public targetP2 = { x: 0, y: 0, angle: 0 };
+  private isFirstSnapshot = true;
+
   // Guest: apply a received snapshot to render the game
   public applySnapshot(snap: GameSnapshot) {
-    // Tanks
-    this.p1.x = snap.p1.x; this.p1.y = snap.p1.y; this.p1.angle = snap.p1.angle;
-    this.p1.isAlive = snap.p1.alive; this.p1.weapon = snap.p1.weapon as 'STANDARD' | 'LASER' | 'SHOTGUN';
-    this.p1.specialAmmo = snap.p1.ammo; this.p1.boostCooldown = snap.p1.boostCd;
-    this.p2.x = snap.p2.x; this.p2.y = snap.p2.y; this.p2.angle = snap.p2.angle;
-    this.p2.isAlive = snap.p2.alive; this.p2.weapon = snap.p2.weapon as 'STANDARD' | 'LASER' | 'SHOTGUN';
-    this.p2.specialAmmo = snap.p2.ammo; this.p2.boostCooldown = snap.p2.boostCd;
+    this.targetP1 = { x: snap.p1.x, y: snap.p1.y, angle: snap.p1.angle };
+    this.targetP2 = { x: snap.p2.x, y: snap.p2.y, angle: snap.p2.angle };
 
-    // Bullets — recreate from scratch
+    // Snap immediately if first snapshot or teleport/respawn
+    if (this.isFirstSnapshot || Math.hypot(this.p1.x - snap.p1.x, this.p1.y - snap.p1.y) > 90) {
+      this.p1.x = snap.p1.x;
+      this.p1.y = snap.p1.y;
+      this.p1.angle = snap.p1.angle;
+      this.p2.x = snap.p2.x;
+      this.p2.y = snap.p2.y;
+      this.p2.angle = snap.p2.angle;
+      this.isFirstSnapshot = false;
+    }
+
+    this.p1.isAlive = snap.p1.alive;
+    this.p1.weapon = snap.p1.weapon as 'STANDARD' | 'LASER' | 'SHOTGUN';
+    this.p1.specialAmmo = snap.p1.ammo;
+    this.p1.boostCooldown = snap.p1.boostCd;
+
+    this.p2.isAlive = snap.p2.alive;
+    this.p2.weapon = snap.p2.weapon as 'STANDARD' | 'LASER' | 'SHOTGUN';
+    this.p2.specialAmmo = snap.p2.ammo;
+    this.p2.boostCooldown = snap.p2.boostCd;
+
+    // Bullets — recreate from snapshot
     this.projectiles.bullets = snap.bullets.map(b => {
       const bullet = new Bullet(b.x, b.y, b.vx, b.vy, b.ownerId, b.isPellet);
       bullet.radius = b.r;
@@ -523,6 +545,27 @@ export class GameManager {
     this.suddenDeathTime = snap.suddenDeathTime;
     this.suddenDeathActive = snap.suddenDeathActive;
     this.timeScale = snap.timeScale;
+  }
+
+  // Smooth position and angle interpolation on guest (eliminates school Wi-Fi jitter)
+  public interpolateGuest(dt: number) {
+    const factor = Math.min(1, dt * 26);
+
+    // P1
+    this.p1.x += (this.targetP1.x - this.p1.x) * factor;
+    this.p1.y += (this.targetP1.y - this.p1.y) * factor;
+    let diff1 = this.targetP1.angle - this.p1.angle;
+    while (diff1 > Math.PI) diff1 -= Math.PI * 2;
+    while (diff1 < -Math.PI) diff1 += Math.PI * 2;
+    this.p1.angle += diff1 * factor;
+
+    // P2
+    this.p2.x += (this.targetP2.x - this.p2.x) * factor;
+    this.p2.y += (this.targetP2.y - this.p2.y) * factor;
+    let diff2 = this.targetP2.angle - this.p2.angle;
+    while (diff2 > Math.PI) diff2 -= Math.PI * 2;
+    while (diff2 < -Math.PI) diff2 += Math.PI * 2;
+    this.p2.angle += diff2 * factor;
   }
 
   // Host: serialize maze layout for the guest

@@ -22,6 +22,7 @@ export interface GameSnapshot {
   suddenDeathTime: number;
   suddenDeathActive: boolean;
   timeScale: number;
+  timestamp: number;
 }
 
 export interface ControlsMessage {
@@ -49,12 +50,41 @@ export interface MazeDataMessage {
   canvasHeight: number;
 }
 
+// Enterprise & School Wi-Fi ICE Server Configuration
+// Includes STUN + Public OpenRelay TURN servers (bypasses restrictive symmetric NAT and school firewalls over port 443 TLS)
+export const ROBUST_ICE_SERVERS: RTCIceServer[] = [
+  // Fast public STUN servers for direct P2P hole punching
+  { urls: 'stun:stun.l.google.com:19302' },
+  { urls: 'stun:stun1.l.google.com:19302' },
+  { urls: 'stun:stun2.l.google.com:19302' },
+  { urls: 'stun:stun.cloudflare.com:3478' },
+  { urls: 'stun:global.stun.twilio.com:3478' },
+
+  // OpenRelay free public TURN relays: forces traffic through HTTPS (port 443/80 TCP/TLS) when school firewall blocks UDP
+  {
+    urls: 'turn:openrelay.metered.ca:80',
+    username: 'openrelayproject',
+    credential: 'openrelayproject'
+  },
+  {
+    urls: 'turn:openrelay.metered.ca:443',
+    username: 'openrelayproject',
+    credential: 'openrelayproject'
+  },
+  {
+    urls: 'turn:openrelay.metered.ca:443?transport=tcp',
+    username: 'openrelayproject',
+    credential: 'openrelayproject'
+  }
+];
+
 export class NetworkManager {
   public peer: Peer | null = null;
   public connection: DataConnection | null = null;
   public role: NetworkRole = null;
   public roomCode: string = '';
   public isConnected: boolean = false;
+  public pingMs: number = 0;
 
   // Guest receives latest remote controls to feed into host's game loop
   public remoteControls: TankControls = {
@@ -70,6 +100,9 @@ export class NetworkManager {
   public onConnect?: () => void;
   public onDisconnect?: (reason: string) => void;
   public onError?: (msg: string) => void;
+  public onPing?: (ms: number) => void;
+
+  private pingTimer: number = 0;
 
   private generateRoomCode(): string {
     const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
@@ -80,27 +113,35 @@ export class NetworkManager {
     return code;
   }
 
+  // Create Peer instance with full firewall-traversal configuration
+  private createPeerInstance(id?: string): Peer {
+    return new Peer(id as unknown as string, {
+      debug: 1,
+      config: {
+        iceServers: ROBUST_ICE_SERVERS,
+        iceCandidatePoolSize: 10,
+        iceTransportPolicy: 'all'
+      }
+    });
+  }
+
   // HOST creates a room and waits for a guest to join
   public async hostGame(): Promise<string> {
     this.role = 'host';
     this.roomCode = this.generateRoomCode();
 
     return new Promise((resolve, reject) => {
-      // Use the room code as the Peer ID so the guest can connect directly
-      this.peer = new Peer('tank-arena-' + this.roomCode, {
-        debug: 0
-      });
+      this.peer = this.createPeerInstance('tank-arena-' + this.roomCode);
 
-      this.peer.on('open', (id: string) => {
+      this.peer.on('open', () => {
         resolve(this.roomCode);
       });
 
       this.peer.on('error', (err: Error) => {
-        // If ID is taken, try again with a new code
         if (err.message.includes('is taken') || err.message.includes('ID')) {
           this.peer?.destroy();
           this.roomCode = this.generateRoomCode();
-          this.peer = new Peer('tank-arena-' + this.roomCode, { debug: 0 });
+          this.peer = this.createPeerInstance('tank-arena-' + this.roomCode);
           this.peer.on('open', () => resolve(this.roomCode));
           this.peer.on('error', (err2: Error) => {
             if (this.onError) this.onError('Failed to create room: ' + err2.message);
@@ -125,7 +166,7 @@ export class NetworkManager {
     this.roomCode = roomCode.toUpperCase().trim();
 
     return new Promise((resolve, reject) => {
-      this.peer = new Peer(undefined as unknown as string, { debug: 0 });
+      this.peer = this.createPeerInstance();
 
       this.peer.on('open', () => {
         const conn = this.peer!.connect('tank-arena-' + this.roomCode, {
@@ -142,17 +183,17 @@ export class NetworkManager {
           reject(err);
         });
 
-        // Timeout if host isn't found in 10 seconds
+        // 12-second connection timeout for slow mobile/school networks
         setTimeout(() => {
           if (!this.isConnected) {
-            if (this.onError) this.onError('Room not found. Check the code and try again.');
+            if (this.onError) this.onError('Connection timed out. Check the room code and try again.');
             reject(new Error('Connection timeout'));
           }
-        }, 10000);
+        }, 12000);
       });
 
       this.peer.on('error', (err: Error) => {
-        if (err.message.includes('Could not connect')) {
+        if (err.message.includes('Could not connect') || err.message.includes('not found')) {
           if (this.onError) this.onError('Room not found. Check the code and try again.');
         } else {
           if (this.onError) this.onError('Error: ' + err.message);
@@ -182,6 +223,15 @@ export class NetworkManager {
       this.isConnected = false;
       if (this.onDisconnect) this.onDisconnect('Connection error: ' + err.message);
     });
+
+    // Start ping heartbeat
+    if (this.role === 'guest') {
+      window.setInterval(() => {
+        if (this.isConnected && this.connection) {
+          this.connection.send({ type: 'ping', sentAt: performance.now() });
+        }
+      }, 1500);
+    }
   }
 
   private handleMessage(data: NetMessage) {
@@ -198,6 +248,14 @@ export class NetworkManager {
     } else if (data.type === 'maze') {
       this.latestMaze = data as unknown as MazeDataMessage;
       if (this.onMazeReceived) this.onMazeReceived();
+    } else if (data.type === 'ping') {
+      if (this.connection && this.isConnected) {
+        this.connection.send({ type: 'pong', sentAt: data.sentAt });
+      }
+    } else if (data.type === 'pong') {
+      const sentAt = data.sentAt as number;
+      this.pingMs = Math.round(performance.now() - sentAt);
+      if (this.onPing) this.onPing(this.pingMs);
     }
   }
 

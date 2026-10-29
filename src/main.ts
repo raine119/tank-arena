@@ -41,6 +41,7 @@ const timerValEl = document.getElementById('sudden-death-timer')!;
 const suddenDeathBannerEl = document.getElementById('sudden-death-banner')!;
 const killFeedEl = document.getElementById('kill-feed')!;
 const controlHintsEl = document.getElementById('control-hints')!;
+const pingBadgeEl = document.getElementById('ping-badge')!;
 
 const matchModalEl = document.getElementById('match-modal')!;
 const modalTitleEl = document.getElementById('modal-title')!;
@@ -99,6 +100,7 @@ function goToLobby() {
   appEl.classList.add('hidden');
   matchModalEl.classList.add('hidden');
   disconnectBanner.classList.add('hidden');
+  pingBadgeEl.classList.add('hidden');
   showLobbyPanel('modes');
   game = null;
 }
@@ -278,7 +280,8 @@ function loop(currentTime: number) {
       }
     }
 
-    // Guest still updates local particles for effects
+    // Smooth interpolation on guest (erases network jitter)
+    game.interpolateGuest(dt);
     game.particles.update(dt);
     game.render(currentTime / 1000);
 
@@ -290,9 +293,9 @@ function loop(currentTime: number) {
     game.update(dt, p1Controls, p2Controls);
     game.render(currentTime / 1000);
 
-    // Send snapshot to guest (~20 times per second for efficiency)
+    // Send snapshot to guest (~30 times per second for smooth low-latency motion)
     snapshotAccum += dt;
-    if (snapshotAccum >= 0.05) {
+    if (snapshotAccum >= 0.033) {
       snapshotAccum = 0;
       net.sendSnapshot(game.buildSnapshot());
     }
@@ -340,6 +343,13 @@ btnOnlineHost.addEventListener('click', async () => {
 
     net.onConnect = () => {
       startGame('online-host');
+      pingBadgeEl.classList.remove('hidden');
+      pingBadgeEl.textContent = '🌐 CONNECTED';
+    };
+
+    net.onPing = (ms) => {
+      pingBadgeEl.classList.remove('hidden');
+      pingBadgeEl.textContent = `🟢 PING: ${ms}ms`;
     };
 
     net.onError = (msg) => {
@@ -379,10 +389,16 @@ btnJoinConnect.addEventListener('click', async () => {
     // Wait for maze data before starting
     net.onMazeReceived = () => {
       startGame('online-guest');
+      pingBadgeEl.classList.remove('hidden');
 
       if (net.latestMaze && game) {
         game.applyMazeData(net.latestMaze);
       }
+    };
+
+    net.onPing = (ms) => {
+      pingBadgeEl.classList.remove('hidden');
+      pingBadgeEl.textContent = `🟢 PING: ${ms}ms`;
     };
 
     net.onDisconnect = (reason) => {
