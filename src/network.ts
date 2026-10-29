@@ -8,7 +8,7 @@ export interface NetMessage {
   [key: string]: unknown;
 }
 
-// Serialisable snapshot sent from host → guest every tick
+// Serialisable snapshot sent from host → guest
 export interface GameSnapshot {
   type: 'state';
   p1: { x: number; y: number; angle: number; alive: boolean; weapon: string; ammo: number; boostCd: number };
@@ -42,25 +42,26 @@ export interface MazeDataMessage {
   cellSize: number;
   originX: number;
   originY: number;
-  gridData: string; // JSON of cell grid
-  segmentData: string; // JSON of segments
+  gridData: string;
+  segmentData: string;
   p1Spawn: { x: number; y: number; angle: number };
   p2Spawn: { x: number; y: number; angle: number };
   canvasWidth: number;
   canvasHeight: number;
 }
 
-// Enterprise & School Wi-Fi ICE Server Configuration
-// Includes STUN + Public OpenRelay TURN servers (bypasses restrictive symmetric NAT and school firewalls over port 443 TLS)
+// Comprehensive STUN + TURN server pool
+// Uses multiple STUN mirrors + OpenRelay TURN servers (traversing school symmetric NAT and firewalls)
 export const ROBUST_ICE_SERVERS: RTCIceServer[] = [
-  // Fast public STUN servers for direct P2P hole punching
   { urls: 'stun:stun.l.google.com:19302' },
   { urls: 'stun:stun1.l.google.com:19302' },
   { urls: 'stun:stun2.l.google.com:19302' },
+  { urls: 'stun:stun3.l.google.com:19302' },
+  { urls: 'stun:stun4.l.google.com:19302' },
   { urls: 'stun:stun.cloudflare.com:3478' },
   { urls: 'stun:global.stun.twilio.com:3478' },
 
-  // OpenRelay free public TURN relays: forces traffic through HTTPS (port 443/80 TCP/TLS) when school firewall blocks UDP
+  // OpenRelay Public TURN Relay (Port 443 HTTPS bypasses school firewall blocks on raw UDP)
   {
     urls: 'turn:openrelay.metered.ca:80',
     username: 'openrelayproject',
@@ -86,23 +87,21 @@ export class NetworkManager {
   public isConnected: boolean = false;
   public pingMs: number = 0;
 
-  // Guest receives latest remote controls to feed into host's game loop
   public remoteControls: TankControls = {
     forward: false, reverse: false, turnLeft: false, turnRight: false, shoot: false, boost: false
   };
 
-  // Guest receives game snapshots from host
   public latestSnapshot: GameSnapshot | null = null;
   public latestMaze: MazeDataMessage | null = null;
-  public onMazeReceived: (() => void) | null = null;
 
-  // Callbacks for UI updates
+  public onMazeReceived?: (maze: MazeDataMessage) => void;
   public onConnect?: () => void;
+  public onGuestReady?: () => void;
   public onDisconnect?: (reason: string) => void;
   public onError?: (msg: string) => void;
   public onPing?: (ms: number) => void;
 
-  private pingTimer: number = 0;
+  private pingIntervalId: number | null = null;
 
   private generateRoomCode(): string {
     const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
@@ -113,19 +112,17 @@ export class NetworkManager {
     return code;
   }
 
-  // Create Peer instance with full firewall-traversal configuration
   private createPeerInstance(id?: string): Peer {
     return new Peer(id as unknown as string, {
       debug: 1,
       config: {
         iceServers: ROBUST_ICE_SERVERS,
-        iceCandidatePoolSize: 10,
-        iceTransportPolicy: 'all'
+        iceCandidatePoolSize: 10
       }
     });
   }
 
-  // HOST creates a room and waits for a guest to join
+  // HOST creates room and awaits connection
   public async hostGame(): Promise<string> {
     this.role = 'host';
     this.roomCode = this.generateRoomCode();
@@ -147,15 +144,35 @@ export class NetworkManager {
             if (this.onError) this.onError('Failed to create room: ' + err2.message);
             reject(err2);
           });
-          this.peer.on('connection', (conn: DataConnection) => this.handleConnection(conn));
+          this.setupHostConnectionListener();
         } else {
           if (this.onError) this.onError('Connection error: ' + err.message);
           reject(err);
         }
       });
 
-      this.peer.on('connection', (conn: DataConnection) => {
-        this.handleConnection(conn);
+      this.setupHostConnectionListener();
+    });
+  }
+
+  private setupHostConnectionListener() {
+    if (!this.peer) return;
+
+    this.peer.on('connection', (conn: DataConnection) => {
+      conn.on('open', () => {
+        this.connection = conn;
+        this.isConnected = true;
+        this.bindDataChannel(conn);
+        if (this.onConnect) this.onConnect();
+      });
+
+      conn.on('close', () => {
+        this.handleClose('Opponent disconnected.');
+      });
+
+      conn.on('error', (err: Error) => {
+        console.warn('[NET] Host connection warning/error:', err);
+        this.handleClose('Connection error: ' + err.message);
       });
     });
   }
@@ -168,66 +185,74 @@ export class NetworkManager {
     return new Promise((resolve, reject) => {
       this.peer = this.createPeerInstance();
 
+      let connectTimeout: number | null = null;
+
       this.peer.on('open', () => {
         const conn = this.peer!.connect('tank-arena-' + this.roomCode, {
           reliable: true
         });
 
+        connectTimeout = window.setTimeout(() => {
+          if (!this.isConnected) {
+            if (this.onError) this.onError('Could not connect to room. Check the code and try again.');
+            reject(new Error('Connection timeout'));
+          }
+        }, 15000);
+
         conn.on('open', () => {
-          this.handleConnection(conn);
+          if (connectTimeout) {
+            clearTimeout(connectTimeout);
+            connectTimeout = null;
+          }
+          this.connection = conn;
+          this.isConnected = true;
+          this.bindDataChannel(conn);
+
+          // Signal to host that guest is ready to receive maze
+          conn.send({ type: 'ready' });
+
+          if (this.onConnect) this.onConnect();
           resolve();
         });
 
-        conn.on('error', (err: Error) => {
-          if (this.onError) this.onError('Connection failed: ' + err.message);
-          reject(err);
+        conn.on('close', () => {
+          this.handleClose('Opponent disconnected.');
         });
 
-        // 12-second connection timeout for slow mobile/school networks
-        setTimeout(() => {
-          if (!this.isConnected) {
-            if (this.onError) this.onError('Connection timed out. Check the room code and try again.');
-            reject(new Error('Connection timeout'));
-          }
-        }, 12000);
+        conn.on('error', (err: Error) => {
+          console.warn('[NET] Guest connection warning/error:', err);
+          this.handleClose('Connection error: ' + err.message);
+          reject(err);
+        });
       });
 
       this.peer.on('error', (err: Error) => {
-        if (err.message.includes('Could not connect') || err.message.includes('not found')) {
-          if (this.onError) this.onError('Room not found. Check the code and try again.');
+        if (connectTimeout) {
+          clearTimeout(connectTimeout);
+          connectTimeout = null;
+        }
+        const msg = err.message || '';
+        if (msg.includes('Could not connect') || msg.includes('not found') || (err as { type?: string }).type === 'peer-unavailable') {
+          if (this.onError) this.onError('Room not found. Check the room code.');
         } else {
-          if (this.onError) this.onError('Error: ' + err.message);
+          if (this.onError) this.onError('Error: ' + msg);
         }
         reject(err);
       });
     });
   }
 
-  private handleConnection(conn: DataConnection) {
-    this.connection = conn;
-    this.isConnected = true;
-
-    if (this.onConnect) this.onConnect();
-
+  private bindDataChannel(conn: DataConnection) {
     conn.on('data', (raw: unknown) => {
       const data = raw as NetMessage;
       this.handleMessage(data);
     });
 
-    conn.on('close', () => {
-      this.isConnected = false;
-      if (this.onDisconnect) this.onDisconnect('Opponent disconnected.');
-    });
-
-    conn.on('error', (err: Error) => {
-      this.isConnected = false;
-      if (this.onDisconnect) this.onDisconnect('Connection error: ' + err.message);
-    });
-
-    // Start ping heartbeat
+    // Start heartbeat ping
     if (this.role === 'guest') {
-      window.setInterval(() => {
-        if (this.isConnected && this.connection) {
+      if (this.pingIntervalId) clearInterval(this.pingIntervalId);
+      this.pingIntervalId = window.setInterval(() => {
+        if (this.isConnected && this.connection && this.connection.open) {
           this.connection.send({ type: 'ping', sentAt: performance.now() });
         }
       }, 1500);
@@ -247,9 +272,12 @@ export class NetworkManager {
       this.latestSnapshot = data as unknown as GameSnapshot;
     } else if (data.type === 'maze') {
       this.latestMaze = data as unknown as MazeDataMessage;
-      if (this.onMazeReceived) this.onMazeReceived();
+      if (this.onMazeReceived) this.onMazeReceived(this.latestMaze);
+    } else if (data.type === 'ready' && this.role === 'host') {
+      // Guest is ready! Send initial maze
+      if (this.onGuestReady) this.onGuestReady();
     } else if (data.type === 'ping') {
-      if (this.connection && this.isConnected) {
+      if (this.connection && this.connection.open) {
         this.connection.send({ type: 'pong', sentAt: data.sentAt });
       }
     } else if (data.type === 'pong') {
@@ -259,16 +287,25 @@ export class NetworkManager {
     }
   }
 
-  // Host sends full game state to guest
+  private handleClose(reason: string) {
+    if (!this.isConnected) return;
+    this.isConnected = false;
+    if (this.pingIntervalId) {
+      clearInterval(this.pingIntervalId);
+      this.pingIntervalId = null;
+    }
+    if (this.onDisconnect) this.onDisconnect(reason);
+  }
+
+  // Safe send: Only sends if connection exists and is fully open!
   public sendSnapshot(snapshot: GameSnapshot) {
-    if (this.connection && this.isConnected) {
+    if (this.connection && this.isConnected && this.connection.open) {
       this.connection.send(snapshot);
     }
   }
 
-  // Guest sends their controls to host
   public sendControls(controls: TankControls) {
-    if (this.connection && this.isConnected) {
+    if (this.connection && this.isConnected && this.connection.open) {
       const msg: ControlsMessage = {
         type: 'controls',
         forward: controls.forward,
@@ -282,15 +319,18 @@ export class NetworkManager {
     }
   }
 
-  // Host sends maze layout to guest
   public sendMaze(mazeData: MazeDataMessage) {
-    if (this.connection && this.isConnected) {
+    if (this.connection && this.isConnected && this.connection.open) {
       this.connection.send(mazeData);
     }
   }
 
   public disconnect() {
     this.isConnected = false;
+    if (this.pingIntervalId) {
+      clearInterval(this.pingIntervalId);
+      this.pingIntervalId = null;
+    }
     this.connection?.close();
     this.peer?.destroy();
     this.peer = null;

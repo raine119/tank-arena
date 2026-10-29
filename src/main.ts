@@ -62,7 +62,23 @@ let playMode: PlayMode = 'local-2p';
 let game: GameManager | null = null;
 const net = new NetworkManager();
 let loopRunning = false;
+let animFrameId: number | null = null;
 let lastTime = 0;
+
+function stopLoop() {
+  loopRunning = false;
+  if (animFrameId !== null) {
+    cancelAnimationFrame(animFrameId);
+    animFrameId = null;
+  }
+}
+
+function startLoop() {
+  if (loopRunning) return;
+  loopRunning = true;
+  lastTime = performance.now();
+  animFrameId = requestAnimationFrame(loop);
+}
 
 const keysDown = new Set<string>();
 
@@ -74,9 +90,6 @@ window.addEventListener('keydown', (e) => {
   if (game && game.state === 'MATCH_OVER' && e.code === 'Space' && playMode !== 'online-guest') {
     game.resetMatch();
     matchModalEl.classList.add('hidden');
-    if (playMode === 'online-host') {
-      net.sendMaze(game.buildMazeData());
-    }
   }
 });
 
@@ -94,7 +107,7 @@ function showLobbyPanel(panel: 'modes' | 'host' | 'join' | 'connecting') {
 }
 
 function goToLobby() {
-  loopRunning = false;
+  stopLoop();
   net.disconnect();
   lobbyScreen.classList.remove('hidden');
   appEl.classList.add('hidden');
@@ -107,6 +120,7 @@ function goToLobby() {
 
 // ===== Start Game =====
 function startGame(mode: PlayMode) {
+  stopLoop();
   playMode = mode;
   lobbyScreen.classList.add('hidden');
   appEl.classList.remove('hidden');
@@ -115,6 +129,12 @@ function startGame(mode: PlayMode) {
 
   game = new GameManager(canvas);
   wireGameCallbacks(game);
+
+  game.onNewRound = (mazeData) => {
+    if (playMode === 'online-host') {
+      net.sendMaze(mazeData);
+    }
+  };
 
   if (mode === 'vs-ai') {
     game.p2IsBot = true;
@@ -142,15 +162,7 @@ function startGame(mode: PlayMode) {
   }
 
   game.init();
-
-  if (mode === 'online-host' && net.isConnected) {
-    // Send maze data to guest immediately
-    net.sendMaze(game.buildMazeData());
-  }
-
-  lastTime = performance.now();
-  loopRunning = true;
-  requestAnimationFrame(loop);
+  startLoop();
 }
 
 // ===== Game Callbacks =====
@@ -197,7 +209,7 @@ function getLocalControls(): TankControls {
     boost: keysDown.has('ShiftLeft') || keysDown.has('ShiftRight') || keysDown.has('KeyE')
   };
 
-  // Also check gamepad slot 0
+  // Check gamepad slot 0
   const gamepads = navigator.getGamepads ? navigator.getGamepads() : [];
   const gp = gamepads[0];
   if (gp && gp.connected) {
@@ -243,6 +255,8 @@ function getP2LocalControls(): TankControls {
 
 // ===== Main Game Loop =====
 let snapshotAccum = 0;
+let lastGuestControls: TankControls | null = null;
+let guestControlsAccum = 0;
 
 function loop(currentTime: number) {
   if (!loopRunning || !game) return;
@@ -251,9 +265,22 @@ function loop(currentTime: number) {
   lastTime = currentTime;
 
   if (playMode === 'online-guest') {
-    // GUEST: apply latest snapshot from host and render
+    // GUEST: send controls on change or 100ms heartbeat
     const myControls = getLocalControls();
-    net.sendControls(myControls);
+    guestControlsAccum += dt;
+    const controlsChanged = !lastGuestControls ||
+      lastGuestControls.forward !== myControls.forward ||
+      lastGuestControls.reverse !== myControls.reverse ||
+      lastGuestControls.turnLeft !== myControls.turnLeft ||
+      lastGuestControls.turnRight !== myControls.turnRight ||
+      lastGuestControls.shoot !== myControls.shoot ||
+      lastGuestControls.boost !== myControls.boost;
+
+    if (controlsChanged || guestControlsAccum >= 0.1) {
+      guestControlsAccum = 0;
+      lastGuestControls = { ...myControls };
+      net.sendControls(myControls);
+    }
 
     if (net.latestSnapshot) {
       game.applySnapshot(net.latestSnapshot);
@@ -300,11 +327,6 @@ function loop(currentTime: number) {
       net.sendSnapshot(game.buildSnapshot());
     }
 
-    // Send new maze on round transitions
-    if (game.state === 'COUNTDOWN' && game.countdownTimer > 3.0) {
-      net.sendMaze(game.buildMazeData());
-    }
-
   } else {
     // LOCAL: normal single-machine play
     const p1Controls = getLocalControls();
@@ -314,7 +336,7 @@ function loop(currentTime: number) {
     game.render(currentTime / 1000);
   }
 
-  requestAnimationFrame(loop);
+  animFrameId = requestAnimationFrame(loop);
 }
 
 // ===== Lobby Button Events =====
@@ -327,6 +349,7 @@ btnVsAI.addEventListener('click', () => {
 });
 
 btnOnlineHost.addEventListener('click', async () => {
+  let hostGameStarted = false;
   showLobbyPanel('host');
   roomCodeDisplay.textContent = '...';
 
@@ -342,9 +365,18 @@ btnOnlineHost.addEventListener('click', async () => {
     };
 
     net.onConnect = () => {
-      startGame('online-host');
-      pingBadgeEl.classList.remove('hidden');
-      pingBadgeEl.textContent = '🌐 CONNECTED';
+      if (!hostGameStarted) {
+        hostGameStarted = true;
+        startGame('online-host');
+        pingBadgeEl.classList.remove('hidden');
+        pingBadgeEl.textContent = '🌐 CONNECTED';
+        if (game) net.sendMaze(game.buildMazeData());
+      }
+    };
+
+    net.onGuestReady = () => {
+      // Guest signals it is ready to receive maze layout
+      if (game) net.sendMaze(game.buildMazeData());
     };
 
     net.onPing = (ms) => {
@@ -354,7 +386,7 @@ btnOnlineHost.addEventListener('click', async () => {
 
     net.onError = (msg) => {
       roomCodeDisplay.textContent = 'ERROR';
-      console.error(msg);
+      console.error('[Host Net Error]', msg);
     };
   } catch {
     roomCodeDisplay.textContent = 'FAIL';
@@ -368,7 +400,7 @@ btnOnlineJoin.addEventListener('click', () => {
 });
 
 btnJoinConnect.addEventListener('click', async () => {
-  const code = joinCodeInput.value.trim().toUpperCase();
+  const code = joinCodeInput.value.trim().toUpperCase().replace(/[^A-Z0-9]/g, '');
   if (code.length < 4) {
     joinError.textContent = 'Enter a valid room code.';
     joinError.classList.remove('hidden');
@@ -376,42 +408,46 @@ btnJoinConnect.addEventListener('click', async () => {
   }
 
   showLobbyPanel('connecting');
+  let guestGameStarted = false;
 
+  // Register ALL callbacks before initiating connection!
   net.onError = (msg) => {
     showLobbyPanel('join');
     joinError.textContent = msg;
     joinError.classList.remove('hidden');
   };
 
+  net.onMazeReceived = (maze) => {
+    if (!guestGameStarted || !game) {
+      guestGameStarted = true;
+      startGame('online-guest');
+      pingBadgeEl.classList.remove('hidden');
+    }
+    if (game) {
+      game.applyMazeData(maze);
+    }
+  };
+
+  net.onPing = (ms) => {
+    pingBadgeEl.classList.remove('hidden');
+    pingBadgeEl.textContent = `🟢 PING: ${ms}ms`;
+  };
+
   try {
     await net.joinGame(code);
 
-    // Wait for maze data before starting
-    net.onMazeReceived = () => {
-      startGame('online-guest');
-      pingBadgeEl.classList.remove('hidden');
-
-      if (net.latestMaze && game) {
-        game.applyMazeData(net.latestMaze);
-      }
-    };
-
-    net.onPing = (ms) => {
-      pingBadgeEl.classList.remove('hidden');
-      pingBadgeEl.textContent = `🟢 PING: ${ms}ms`;
-    };
-
-    net.onDisconnect = (reason) => {
-      disconnectBanner.classList.remove('hidden');
-    };
-
-    // If we already have maze data, start immediately
-    if (net.latestMaze) {
+    // If maze arrived during handshake before promise returned:
+    if (net.latestMaze && (!guestGameStarted || !game)) {
+      guestGameStarted = true;
       startGame('online-guest');
       if (game) game.applyMazeData(net.latestMaze);
     }
   } catch {
     showLobbyPanel('join');
+    if (joinError.classList.contains('hidden')) {
+      joinError.textContent = 'Could not connect to room. Check code and try again.';
+      joinError.classList.remove('hidden');
+    }
   }
 });
 
@@ -429,9 +465,6 @@ btnNextRound.addEventListener('click', () => {
   if (!game) return;
   game.resetMatch();
   matchModalEl.classList.add('hidden');
-  if (playMode === 'online-host') {
-    net.sendMaze(game.buildMazeData());
-  }
 });
 
 btnBackToLobby.addEventListener('click', goToLobby);
@@ -447,9 +480,6 @@ btnRestartMatch.addEventListener('click', () => {
   if (!game) return;
   game.resetMatch();
   matchModalEl.classList.add('hidden');
-  if (playMode === 'online-host') {
-    net.sendMaze(game.buildMazeData());
-  }
 });
 
 // Handle disconnect during online play

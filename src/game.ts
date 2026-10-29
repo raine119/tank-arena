@@ -50,6 +50,7 @@ export class GameManager {
   public onSuddenDeath?: (active: boolean) => void;
   public onMatchEnd?: (winnerName: string, p1Score: number, p2Score: number) => void;
   public onKillMsg?: (msg: string) => void;
+  public onNewRound?: (mazeData: MazeDataMessage) => void;
 
   constructor(canvas: HTMLCanvasElement) {
     this.canvas = canvas;
@@ -120,6 +121,10 @@ export class GameManager {
 
     if (this.onSuddenDeath) this.onSuddenDeath(false);
     this.notifyUI();
+
+    if (this.onNewRound) {
+      this.onNewRound(this.buildMazeData());
+    }
   }
 
   public resetMatch() {
@@ -457,31 +462,47 @@ export class GameManager {
     return {
       type: 'state',
       p1: {
-        x: this.p1.x, y: this.p1.y, angle: this.p1.angle,
-        alive: this.p1.isAlive, weapon: this.p1.weapon,
-        ammo: this.p1.specialAmmo, boostCd: this.p1.boostCooldown
+        x: Math.round(this.p1.x * 10) / 10,
+        y: Math.round(this.p1.y * 10) / 10,
+        angle: Math.round(this.p1.angle * 100) / 100,
+        alive: this.p1.isAlive,
+        weapon: this.p1.weapon,
+        ammo: this.p1.specialAmmo,
+        boostCd: Math.round(this.p1.boostCooldown * 10) / 10
       },
       p2: {
-        x: this.p2.x, y: this.p2.y, angle: this.p2.angle,
-        alive: this.p2.isAlive, weapon: this.p2.weapon,
-        ammo: this.p2.specialAmmo, boostCd: this.p2.boostCooldown
+        x: Math.round(this.p2.x * 10) / 10,
+        y: Math.round(this.p2.y * 10) / 10,
+        angle: Math.round(this.p2.angle * 100) / 100,
+        alive: this.p2.isAlive,
+        weapon: this.p2.weapon,
+        ammo: this.p2.specialAmmo,
+        boostCd: Math.round(this.p2.boostCooldown * 10) / 10
       },
       bullets: this.projectiles.bullets.map(b => ({
-        x: b.x, y: b.y, vx: b.vx, vy: b.vy,
-        r: b.radius, ownerId: b.ownerId, isPellet: b.isPellet
+        x: Math.round(b.x * 10) / 10,
+        y: Math.round(b.y * 10) / 10,
+        vx: Math.round(b.vx * 10) / 10,
+        vy: Math.round(b.vy * 10) / 10,
+        r: b.radius,
+        ownerId: b.ownerId,
+        isPellet: b.isPellet
       })),
       lasers: this.projectiles.laserBeams.map(l => ({
-        points: l.points.map(p => ({ x: p.x, y: p.y })),
-        alpha: l.alpha,
+        points: l.points.map(p => ({ x: Math.round(p.x * 10) / 10, y: Math.round(p.y * 10) / 10 })),
+        alpha: Math.round(l.alpha * 100) / 100,
         ownerId: l.ownerId
       })),
       crates: this.powerups.crates.map(c => ({
-        x: c.x, y: c.y, type: c.type, rotation: c.rotation
+        x: Math.round(c.x * 10) / 10,
+        y: Math.round(c.y * 10) / 10,
+        type: c.type,
+        rotation: Math.round(c.rotation * 100) / 100
       })),
       scores: [this.p1Score, this.p2Score],
       state: this.state,
-      countdownTimer: this.countdownTimer,
-      suddenDeathTime: this.suddenDeathTime,
+      countdownTimer: Math.round(this.countdownTimer * 100) / 100,
+      suddenDeathTime: Math.round(this.suddenDeathTime),
       suddenDeathActive: this.suddenDeathActive,
       timeScale: this.timeScale,
       timestamp: performance.now()
@@ -492,6 +513,10 @@ export class GameManager {
   public targetP1 = { x: 0, y: 0, angle: 0 };
   public targetP2 = { x: 0, y: 0, angle: 0 };
   private isFirstSnapshot = true;
+  private prevBulletCount = 0;
+  private prevLaserCount = 0;
+  private prevP1Alive = true;
+  private prevP2Alive = true;
 
   // Guest: apply a received snapshot to render the game
   public applySnapshot(snap: GameSnapshot) {
@@ -507,6 +532,40 @@ export class GameManager {
       this.p2.y = snap.p2.y;
       this.p2.angle = snap.p2.angle;
       this.isFirstSnapshot = false;
+    }
+
+    // Audio cues for guest
+    if (snap.bullets.length > this.prevBulletCount) {
+      sound.playShoot();
+    }
+    this.prevBulletCount = snap.bullets.length;
+
+    if (snap.lasers.length > this.prevLaserCount) {
+      sound.playLaser();
+    }
+    this.prevLaserCount = snap.lasers.length;
+
+    if (!snap.p1.alive && this.prevP1Alive) {
+      sound.playExplosion();
+    }
+    this.prevP1Alive = snap.p1.alive;
+
+    if (!snap.p2.alive && this.prevP2Alive) {
+      sound.playExplosion();
+    }
+    this.prevP2Alive = snap.p2.alive;
+
+    // Countdown sounds on guest
+    if (snap.state === 'COUNTDOWN') {
+      const currentNumber = Math.ceil(snap.countdownTimer);
+      if (currentNumber !== this.lastCountdownNumber) {
+        if (currentNumber >= 1 && currentNumber <= 3) {
+          sound.playCountdownBeep(false);
+        } else if (currentNumber <= 0 && this.lastCountdownNumber > 0) {
+          sound.playCountdownBeep(true);
+        }
+        this.lastCountdownNumber = currentNumber;
+      }
     }
 
     this.p1.isAlive = snap.p1.alive;
@@ -601,5 +660,13 @@ export class GameManager {
 
     this.projectiles.clear();
     this.powerups.clear();
+    this.particles.clear();
+
+    this.isFirstSnapshot = true;
+    this.prevBulletCount = 0;
+    this.prevLaserCount = 0;
+    this.prevP1Alive = true;
+    this.prevP2Alive = true;
+    this.lastCountdownNumber = 4;
   }
 }
