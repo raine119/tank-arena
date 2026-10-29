@@ -1,0 +1,156 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+  <title>Tank Arena: Ricochet Protocol</title>
+  <link rel="stylesheet" href="./src/style.css" />
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Chakra+Petch:wght@500;700;900&family=JetBrains+Mono:wght@400;700&display=swap" rel="stylesheet">
+</head>
+<body>
+  <!-- ===== LOBBY SCREEN ===== -->
+  <div id="lobby-screen" class="lobby-screen">
+    <div class="lobby-container">
+      <h1 class="lobby-title">TANK<br><span class="title-accent">ARENA</span></h1>
+      <p class="lobby-subtitle">RICOCHET PROTOCOL</p>
+
+      <!-- Mode Selection -->
+      <div class="lobby-modes" id="lobby-modes">
+        <button class="mode-btn" id="btn-local-2p">
+          <span class="mode-icon">🎮</span>
+          <span class="mode-label">LOCAL 2 PLAYER</span>
+          <span class="mode-desc">Same keyboard — P1: WASD, P2: Arrows</span>
+        </button>
+        <button class="mode-btn" id="btn-vs-ai">
+          <span class="mode-icon">🤖</span>
+          <span class="mode-label">VS AI BOT</span>
+          <span class="mode-desc">Battle Laika 2.0 — single player</span>
+        </button>
+        <button class="mode-btn online-btn" id="btn-online-host">
+          <span class="mode-icon">🌐</span>
+          <span class="mode-label">HOST ONLINE GAME</span>
+          <span class="mode-desc">Create a room for a friend to join</span>
+        </button>
+        <button class="mode-btn online-btn" id="btn-online-join">
+          <span class="mode-icon">🔗</span>
+          <span class="mode-label">JOIN ONLINE GAME</span>
+          <span class="mode-desc">Enter a room code to connect</span>
+        </button>
+      </div>
+
+      <!-- Host Waiting Panel -->
+      <div class="lobby-panel hidden" id="host-panel">
+        <p class="panel-label">SHARE THIS ROOM CODE:</p>
+        <div class="room-code-box" id="room-code-display">-----</div>
+        <p class="panel-hint">Waiting for opponent to join…</p>
+        <div class="spinner"></div>
+        <button class="tool-btn cancel-btn" id="btn-host-cancel">← Cancel</button>
+      </div>
+
+      <!-- Join Panel -->
+      <div class="lobby-panel hidden" id="join-panel">
+        <p class="panel-label">ENTER ROOM CODE:</p>
+        <input type="text" class="room-code-input" id="join-code-input" maxlength="5" placeholder="XXXXX" autocomplete="off" spellcheck="false" />
+        <div class="join-actions">
+          <button class="action-btn primary-btn" id="btn-join-connect">CONNECT</button>
+          <button class="tool-btn cancel-btn" id="btn-join-cancel">← Cancel</button>
+        </div>
+        <p class="panel-error hidden" id="join-error"></p>
+      </div>
+
+      <!-- Connecting Status -->
+      <div class="lobby-panel hidden" id="connecting-panel">
+        <div class="spinner"></div>
+        <p class="panel-hint">Connecting…</p>
+        <button class="tool-btn cancel-btn" id="btn-connecting-cancel">← Cancel</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ===== GAME SCREEN ===== -->
+  <div id="app" class="hidden">
+    <!-- Top HUD Header -->
+    <header class="hud-header">
+      <div class="player-card p1-card">
+        <div class="player-avatar p1-avatar">
+          <span class="badge">P1</span>
+        </div>
+        <div class="player-info">
+          <div class="player-name">RED CORPS</div>
+          <div class="weapon-indicator" id="p1-weapon">STANDARD</div>
+        </div>
+        <div class="player-score" id="p1-score">0</div>
+      </div>
+
+      <div class="center-hud">
+        <div class="round-status" id="round-status">FIRST TO 5</div>
+        <div class="timer-container" id="timer-box">
+          <span class="timer-icon">⏳</span>
+          <span class="timer-val" id="sudden-death-timer">00:35</span>
+        </div>
+        <div class="sudden-death-banner" id="sudden-death-banner">SUDDEN DEATH: MAZE COLLAPSE!</div>
+      </div>
+
+      <div class="player-card p2-card">
+        <div class="player-score" id="p2-score">0</div>
+        <div class="player-info right-aligned">
+          <div class="player-name" id="p2-name">BLUE TANK</div>
+          <div class="weapon-indicator" id="p2-weapon">STANDARD</div>
+        </div>
+        <div class="player-avatar p2-avatar">
+          <span class="badge" id="p2-badge">P2</span>
+        </div>
+      </div>
+    </header>
+
+    <!-- Main Game Canvas Container -->
+    <main class="canvas-wrapper">
+      <canvas id="game-canvas"></canvas>
+      <div id="kill-feed" class="kill-feed"></div>
+
+      <!-- Pause / Match End Modal -->
+      <div id="match-modal" class="modal-overlay hidden">
+        <div class="modal-card">
+          <h2 id="modal-title">VICTORY</h2>
+          <p id="modal-subtitle">Red Corps wins the tournament!</p>
+          <div class="modal-actions">
+            <button id="btn-next-round" class="action-btn primary-btn">PLAY AGAIN [SPACE]</button>
+            <button id="btn-back-to-lobby" class="tool-btn cancel-btn" style="margin-top:10px;">← Back to Menu</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- Online connection lost banner -->
+      <div id="disconnect-banner" class="disconnect-banner hidden">
+        <span>⚠️ Opponent disconnected</span>
+        <button id="btn-disconnect-lobby" class="tool-btn">← Back to Menu</button>
+      </div>
+    </main>
+
+    <!-- Bottom Controls & Settings Bar -->
+    <footer class="hud-footer">
+      <div class="control-hints" id="control-hints">
+        <span class="hint-p1"><strong>P1:</strong> WASD to Move, <strong>SPACE</strong> to Shoot, <strong>SHIFT</strong> to Boost</span>
+        <span class="hint-divider">|</span>
+        <span class="hint-p2"><strong>P2:</strong> ARROWS to Move, <strong>M</strong> to Shoot, <strong>.</strong> to Boost</span>
+      </div>
+
+      <div class="quick-options">
+        <button id="btn-toggle-sound" class="tool-btn" title="Toggle Audio Sound FX">
+          <span class="icon">🔊</span> Sound: <strong id="sound-state-text">ON</strong>
+        </button>
+        <button id="btn-restart-match" class="tool-btn" title="Restart tournament from 0-0">
+          <span class="icon">🔄</span> Reset Match
+        </button>
+        <button id="btn-lobby-return" class="tool-btn" title="Return to lobby">
+          <span class="icon">🏠</span> Menu
+        </button>
+      </div>
+    </footer>
+  </div>
+
+  <script type="module" src="./src/main.ts"></script>
+</body>
+</html>
