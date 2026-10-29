@@ -201,9 +201,23 @@ export class Tank {
   ) {
     const activeBullets = projectiles.bullets.filter(b => b.ownerId === this.id && !b.isPellet).length;
 
-    const barrelLength = 20;
-    const tipX = this.x + Math.cos(this.angle) * barrelLength;
-    const tipY = this.y + Math.sin(this.angle) * barrelLength;
+    const barrelLength = 19;
+    const barrelDir: Vec2 = { x: Math.cos(this.angle), y: Math.sin(this.angle) };
+    const tankCenter: Vec2 = { x: this.x, y: this.y };
+
+    // Prevent shooting through walls:
+    // If the barrel is pressed into or penetrates a wall, clamp the spawn point to the near side of the wall
+    let spawnDist = barrelLength;
+    for (const seg of segments) {
+      const hit = Physics.raySegmentIntersect(tankCenter, barrelDir, barrelLength + 3, seg);
+      if (hit && hit.t >= 0 && hit.t <= 1) {
+        const distToWall = hit.t * (barrelLength + 3);
+        spawnDist = Math.min(spawnDist, Math.max(this.radius + 1.0, distToWall - 2.5));
+      }
+    }
+
+    const tipX = this.x + barrelDir.x * spawnDist;
+    const tipY = this.y + barrelDir.y * spawnDist;
 
     if (this.weapon === 'LASER') {
       projectiles.fireLaser(tipX, tipY, this.angle, this.id, segments, maze, particles);
