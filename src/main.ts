@@ -16,6 +16,7 @@ const btnOnlineJoin = document.getElementById('btn-online-join') as HTMLButtonEl
 
 const hostPanel = document.getElementById('host-panel')!;
 const roomCodeDisplay = document.getElementById('room-code-display')!;
+const hostPanelHint = hostPanel.querySelector('.panel-hint')!;
 const btnHostCancel = document.getElementById('btn-host-cancel') as HTMLButtonElement;
 
 const joinPanel = document.getElementById('join-panel')!;
@@ -352,10 +353,17 @@ btnOnlineHost.addEventListener('click', async () => {
   let hostGameStarted = false;
   showLobbyPanel('host');
   roomCodeDisplay.textContent = '...';
+  hostPanelHint.textContent = 'Connecting to multiplayer service…';
+
+  net.onError = (msg) => {
+    roomCodeDisplay.textContent = 'ERROR';
+    hostPanelHint.textContent = msg;
+  };
 
   try {
     const code = await net.hostGame();
     roomCodeDisplay.textContent = code;
+    hostPanelHint.textContent = 'Waiting for opponent to join…';
 
     // Click to copy
     roomCodeDisplay.onclick = () => {
@@ -386,10 +394,13 @@ btnOnlineHost.addEventListener('click', async () => {
 
     net.onError = (msg) => {
       roomCodeDisplay.textContent = 'ERROR';
-      console.error('[Host Net Error]', msg);
+      hostPanelHint.textContent = msg;
     };
   } catch {
-    roomCodeDisplay.textContent = 'FAIL';
+    roomCodeDisplay.textContent = 'ERROR';
+    if (hostPanelHint.textContent === 'Connecting to multiplayer service…') {
+      hostPanelHint.textContent = 'Could not create room. Check your connection and try again.';
+    }
   }
 });
 

@@ -128,25 +128,60 @@ export class NetworkManager {
     this.roomCode = this.generateRoomCode();
 
     return new Promise((resolve, reject) => {
+      let settled = false;
+      const openTimeout = window.setTimeout(() => {
+        if (settled) return;
+        settled = true;
+        this.disconnect();
+        const error = new Error('Could not reach the multiplayer service. Check your connection and try again.');
+        this.onError?.(error.message);
+        reject(error);
+      }, 12000);
+
       this.peer = this.createPeerInstance('tank-arena-' + this.roomCode);
 
       this.peer.on('open', () => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(openTimeout);
         resolve(this.roomCode);
       });
 
       this.peer.on('error', (err: Error) => {
+        if (settled) return;
         if (err.message.includes('is taken') || err.message.includes('ID')) {
+          clearTimeout(openTimeout);
           this.peer?.destroy();
           this.roomCode = this.generateRoomCode();
           this.peer = this.createPeerInstance('tank-arena-' + this.roomCode);
-          this.peer.on('open', () => resolve(this.roomCode));
+          const retryTimeout = window.setTimeout(() => {
+            if (settled) return;
+            settled = true;
+            this.disconnect();
+            const error = new Error('Could not reach the multiplayer service. Check your connection and try again.');
+            this.onError?.(error.message);
+            reject(error);
+          }, 12000);
+          this.peer.on('open', () => {
+            if (settled) return;
+            settled = true;
+            clearTimeout(retryTimeout);
+            resolve(this.roomCode);
+          });
           this.peer.on('error', (err2: Error) => {
-            if (this.onError) this.onError('Failed to create room: ' + err2.message);
+            if (settled) return;
+            settled = true;
+            clearTimeout(retryTimeout);
+            this.onError?.('Failed to create room: ' + err2.message);
+            this.disconnect();
             reject(err2);
           });
           this.setupHostConnectionListener();
         } else {
-          if (this.onError) this.onError('Connection error: ' + err.message);
+          settled = true;
+          clearTimeout(openTimeout);
+          this.onError?.('Connection error: ' + err.message);
+          this.disconnect();
           reject(err);
         }
       });
@@ -185,25 +220,41 @@ export class NetworkManager {
     return new Promise((resolve, reject) => {
       this.peer = this.createPeerInstance();
 
+      let settled = false;
       let connectTimeout: number | null = null;
+      const clearConnectTimeout = () => {
+        if (connectTimeout !== null) {
+          clearTimeout(connectTimeout);
+          connectTimeout = null;
+        }
+      };
+      const fail = (message: string, error: Error) => {
+        if (settled) return;
+        settled = true;
+        clearConnectTimeout();
+        this.onError?.(message);
+        this.disconnect();
+        reject(error);
+      };
+
+      // PeerJS can fail to emit either `open` or `connection` when its signaling
+      // service is blocked. Bound both phases so the lobby cannot spin forever.
+      connectTimeout = window.setTimeout(() => {
+        fail(
+          'Could not connect to the room. Check the code and your internet connection, then try again.',
+          new Error('Connection timeout')
+        );
+      }, 20000);
 
       this.peer.on('open', () => {
         const conn = this.peer!.connect('tank-arena-' + this.roomCode, {
           reliable: true
         });
 
-        connectTimeout = window.setTimeout(() => {
-          if (!this.isConnected) {
-            if (this.onError) this.onError('Could not connect to room. Check the code and try again.');
-            reject(new Error('Connection timeout'));
-          }
-        }, 15000);
-
         conn.on('open', () => {
-          if (connectTimeout) {
-            clearTimeout(connectTimeout);
-            connectTimeout = null;
-          }
+          if (settled) return;
+          settled = true;
+          clearConnectTimeout();
           this.connection = conn;
           this.isConnected = true;
           this.bindDataChannel(conn);
@@ -221,23 +272,18 @@ export class NetworkManager {
 
         conn.on('error', (err: Error) => {
           console.warn('[NET] Guest connection warning/error:', err);
-          this.handleClose('Connection error: ' + err.message);
-          reject(err);
+          fail('Connection error: ' + err.message, err);
         });
       });
 
       this.peer.on('error', (err: Error) => {
-        if (connectTimeout) {
-          clearTimeout(connectTimeout);
-          connectTimeout = null;
-        }
+        if (settled) return;
         const msg = err.message || '';
         if (msg.includes('Could not connect') || msg.includes('not found') || (err as { type?: string }).type === 'peer-unavailable') {
-          if (this.onError) this.onError('Room not found. Check the room code.');
+          fail('Room not found. Check the room code.', err);
         } else {
-          if (this.onError) this.onError('Error: ' + msg);
+          fail('Could not reach the multiplayer service. Check your connection and try again.', err);
         }
-        reject(err);
       });
     });
   }
