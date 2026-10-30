@@ -132,17 +132,20 @@ export class BotController {
     ).length;
 
     if (bestShootAngle !== null && nearbyBulletsCount < 2) {
-      // RIGOROUS SELF-DAMAGE CHECK: Simulate 3 bullet segments
-      if (!this.willBulletHitSelf(botPos, bestShootAngle, segments, bot.radius)) {
-        const aimDiff = this.normalizeAngle(bestShootAngle - bot.angle);
+      const aimDiff = this.normalizeAngle(bestShootAngle - bot.angle);
 
-        if (Math.abs(aimDiff) < 0.12) {
+      if (Math.abs(aimDiff) < 0.12) {
+        // Tank.update turns before firing, so safety must use its actual angle.
+        // Return after firing so navigation cannot rotate the barrel this frame.
+        if (!this.willBulletHitSelf(botPos, bot.angle, segments, bot.radius)) {
           this.currentControls.shoot = true;
-        } else {
-          // Align barrel
-          if (aimDiff > 0) this.currentControls.turnRight = true;
-          else this.currentControls.turnLeft = true;
+          return;
         }
+      } else {
+        // Aim on its own so navigation cannot overwrite the firing angle.
+        if (aimDiff > 0) this.currentControls.turnRight = true;
+        else this.currentControls.turnLeft = true;
+        return;
       }
     }
 
@@ -352,56 +355,42 @@ export class BotController {
     return closest;
   }
 
-  // ========================================================
-  // COMPREHENSIVE SELF-DAMAGE SIMULATOR (Solves bot shooting itself)
+  // Simulate several seconds of ricochets so the bot avoids shots that quickly
+  // return to its current position.
   // ========================================================
   private willBulletHitSelf(origin: Vec2, angle: number, segments: Segment[], botRadius: number): boolean {
-    const dir1: Vec2 = { x: Math.cos(angle), y: Math.sin(angle) };
-
-    // 1. Ray 1: Muzzle to First Wall
-    const hit1 = this.castRay(origin, dir1, 600, segments);
-    if (!hit1) return false;
-
-    const d1 = Math.hypot(hit1.point.x - origin.x, hit1.point.y - origin.y);
-    // If wall is within 26px of center (barrel touching wall): SUICIDE SHOT!
-    if (d1 < botRadius + 13) {
-      return true;
-    }
-
-    // 2. Ray 2: 1st Reflection
-    const refl1 = Physics.reflect(dir1, hit1.normal);
-    const p2Start: Vec2 = {
-      x: hit1.point.x + hit1.normal.x * 2.0,
-      y: hit1.point.y + hit1.normal.y * 2.0
+    const bulletRadius = 2.2;
+    const maxTravel = 300 * 3.5; // Standard bullet speed × a short safety horizon.
+    const self: Vec2 = { ...origin };
+    let direction: Vec2 = { x: Math.cos(angle), y: Math.sin(angle) };
+    let rayOrigin: Vec2 = {
+      x: origin.x + direction.x * (botRadius + 4),
+      y: origin.y + direction.y * (botRadius + 4)
     };
+    let travelled = 0;
 
-    const hit2 = this.castRay(p2Start, refl1, 600, segments);
-    const p2End = hit2 ? hit2.point : { x: p2Start.x + refl1.x * 600, y: p2Start.y + refl1.y * 600 };
+    for (let bounce = 0; bounce <= 12 && travelled < maxTravel; bounce++) {
+      const remaining = maxTravel - travelled;
+      const hit = this.castRay(rayOrigin, direction, remaining, segments);
+      const rayEnd = hit
+        ? hit.point
+        : { x: rayOrigin.x + direction.x * remaining, y: rayOrigin.y + direction.y * remaining };
 
-    // Test if 1st bounce segment passes through bot's circle
-    const closest1 = Physics.closestPointOnSegment(origin, p2Start, p2End);
-    const distToBounce1 = Math.hypot(origin.x - closest1.x, origin.y - closest1.y);
-    if (distToBounce1 < botRadius + 18) {
-      return true; // 1st reflection will strike the bot!
-    }
+      // The muzzle starts just beyond the bot's front. Check every reflected leg.
+      if (bounce > 0) {
+        const closest = Physics.closestPointOnSegment(self, rayOrigin, rayEnd);
+        if (Math.hypot(self.x - closest.x, self.y - closest.y) <= botRadius + bulletRadius + 1) {
+          return true;
+        }
+      }
 
-    if (!hit2) return false;
-
-    // 3. Ray 3: 2nd Reflection
-    const refl2 = Physics.reflect(refl1, hit2.normal);
-    const p3Start: Vec2 = {
-      x: hit2.point.x + hit2.normal.x * 2.0,
-      y: hit2.point.y + hit2.normal.y * 2.0
-    };
-
-    const hit3 = this.castRay(p3Start, refl2, 600, segments);
-    const p3End = hit3 ? hit3.point : { x: p3Start.x + refl2.x * 600, y: p3Start.y + refl2.y * 600 };
-
-    // Test if 2nd bounce segment passes through bot's circle
-    const closest2 = Physics.closestPointOnSegment(origin, p3Start, p3End);
-    const distToBounce2 = Math.hypot(origin.x - closest2.x, origin.y - closest2.y);
-    if (distToBounce2 < botRadius + 18) {
-      return true; // 2nd reflection will strike the bot!
+      if (!hit) return false;
+      travelled += Math.hypot(hit.point.x - rayOrigin.x, hit.point.y - rayOrigin.y);
+      direction = Physics.normalize(Physics.reflect(direction, hit.normal));
+      rayOrigin = {
+        x: hit.point.x + hit.normal.x * (bulletRadius + 0.5),
+        y: hit.point.y + hit.normal.y * (bulletRadius + 0.5)
+      };
     }
 
     return false;
