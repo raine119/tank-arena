@@ -394,6 +394,14 @@ export class BotController {
     const maxTravel = 300 * 3.5; // Standard bullet speed × a short safety horizon.
     const self: Vec2 = { ...origin };
     let direction: Vec2 = { x: Math.cos(angle), y: Math.sin(angle) };
+
+    // Don't fire the muzzle straight into a wall at close range. A near-zero
+    // ricochet can send the bullet back through the tank before it can move.
+    const closeWall = this.castRay(origin, direction, botRadius + 22, segments);
+    if (closeWall && Math.hypot(closeWall.point.x - origin.x, closeWall.point.y - origin.y) < botRadius + 22) {
+      return true;
+    }
+
     let rayOrigin: Vec2 = {
       x: origin.x + direction.x * (botRadius + 4),
       y: origin.y + direction.y * (botRadius + 4)
