@@ -299,6 +299,9 @@ export class GameManager {
 
       for (const tank of tanks) {
         if (!tank.isAlive) continue;
+        // The AI can make a poor ricochet prediction as it moves. Its shots can
+        // still hit the player, but should not award easy points by killing itself.
+        if (this.p2IsBot && tank.id === 2 && b.ownerId === 2) continue;
 
         const dist = Math.hypot(b.x - tank.x, b.y - tank.y);
         if (dist <= b.radius + tank.radius) {
@@ -315,6 +318,7 @@ export class GameManager {
         const seg = { p1: beam.points[i], p2: beam.points[i + 1] };
         for (const tank of tanks) {
           if (!tank.isAlive) continue;
+          if (this.p2IsBot && tank.id === 2 && beam.ownerId === 2) continue;
 
           const closest = Physics.closestPointOnSegment({ x: tank.x, y: tank.y }, seg.p1, seg.p2);
           const dist = Math.hypot(tank.x - closest.x, tank.y - closest.y);

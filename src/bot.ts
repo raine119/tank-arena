@@ -161,6 +161,7 @@ export class BotController {
     if (powerups.crates.length > 0 && bot.weapon === 'STANDARD') {
       destination = { x: powerups.crates[0].x, y: powerups.crates[0].y };
     }
+    destination = this.nearestSafePosition(destination, maze);
 
     // Recalculate path periodically
     if (this.pathRecalcTimer <= 0 || this.currentPath.length === 0) {
@@ -245,7 +246,7 @@ export class BotController {
 
       for (const n of neighbors) {
         const nKey = key(n.c, n.r);
-        if (!visited.has(nKey) && !maze.grid[n.c][n.r].collapsed) {
+        if (!visited.has(nKey) && !maze.grid[n.c][n.r].collapsed && !maze.grid[n.c][n.r].warningCollapse) {
           visited.add(nKey);
           parent.set(nKey, curr);
           queue.push(n);
@@ -271,6 +272,36 @@ export class BotController {
 
     waypoints.push(endPos);
     return waypoints;
+  }
+
+  private nearestSafePosition(position: Vec2, maze: Maze): Vec2 {
+    const cell = this.posToCell(position, maze);
+    const targetCell = maze.grid[cell.c]?.[cell.r];
+    if (!targetCell?.collapsed && !targetCell?.warningCollapse) return position;
+
+    let nearest: Vec2 | null = null;
+    let nearestDist = Infinity;
+    for (let c = 0; c < maze.cols; c++) {
+      for (let r = 0; r < maze.rows; r++) {
+        const candidate = maze.grid[c][r];
+        if (candidate.collapsed || candidate.warningCollapse) continue;
+
+        const center = {
+          x: maze.originX + (c + 0.5) * maze.cellSize,
+          y: maze.originY + (r + 0.5) * maze.cellSize
+        };
+        const distance = Math.hypot(center.x - position.x, center.y - position.y);
+        if (distance < nearestDist) {
+          nearest = center;
+          nearestDist = distance;
+        }
+      }
+    }
+
+    return nearest ?? {
+      x: maze.originX + (maze.cols / 2) * maze.cellSize,
+      y: maze.originY + (maze.rows / 2) * maze.cellSize
+    };
   }
 
   private posToCell(pos: Vec2, maze: Maze): { c: number; r: number } {
